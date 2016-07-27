@@ -6,7 +6,7 @@ from nose.tools import assert_raises, assert_equal, assert_true
 from pycassa import ColumnFamily, ConnectionPool, InvalidRequestError,\
                     NoConnectionAvailable, MaximumRetryException, AllServersUnavailable
 from pycassa.logging.pool_stats_logger import StatsLogger
-from pycassa.cassandra.ttypes import ColumnPath
+from pycassa.cassandra.ttypes import ColumnPath, TimedOutException
 from pycassa.cassandra.ttypes import InvalidRequestException
 from pycassa.cassandra.ttypes import NotFoundException
 
@@ -15,6 +15,9 @@ _credentials = {'username': 'jsmith', 'password': 'havebadpass'}
 
 def _get_list():
     return ['foo:bar']
+
+def _connection_pool_raiser(*args, **kwargs):
+    raise TimedOutException
 
 class PoolingCase(unittest.TestCase):
 
@@ -366,13 +369,13 @@ class PoolingCase(unittest.TestCase):
 
         threads = []
         args = ('key', {'col': 'val', 'col2': 'val'})
-        for i in range(5):
+        for i in range(30):
             threads.append(threading.Thread(target=cf.insert, args=args))
             threads[-1].start()
         for thread in threads:
             thread.join()
 
-        assert_equal(stats_logger.stats['failed'], 5)
+        assert_equal(pool._current_conns, 5)
 
         pool.dispose()
 
@@ -391,6 +394,9 @@ class PoolingCase(unittest.TestCase):
                 setattr(conn, 'send_batch_mutate', conn._fail_once)
                 conn._should_fail = True
                 conn.return_to_pool()
+
+            #Corrupt pool retries
+            setattr(pool, '_create_connection', _connection_pool_raiser)
 
             cf = ColumnFamily(pool, 'Standard1')
             assert_raises(MaximumRetryException, cf.insert, 'key', {'col': 'val', 'col2': 'val'})
@@ -439,6 +445,9 @@ class PoolingCase(unittest.TestCase):
             setattr(conn, 'send_batch_mutate', conn._fail_once)
             conn._should_fail = True
             conn.return_to_pool()
+
+        #Make pool fail
+        setattr(pool, '_create_connection', _connection_pool_raiser)
 
         cf = ColumnFamily(pool, 'Standard1')
         assert_raises(MaximumRetryException, cf.insert, 'key', {'col': 'val', 'col2': 'val'})

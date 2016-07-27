@@ -122,10 +122,10 @@ class ConnectionWrapper(Connection):
             try:
                 allow_retries = kwargs.pop('allow_retries', True)
                 if kwargs.pop('reset', False):
-                    self._pool._replace_wrapper() # puts a new wrapper in the queue
-                    self._replace(self._pool.get()) # swaps out transport
+                    conn = self._pool._replace_wrapper()  # creates a new wrapper without checking in
+                    self._replace(conn)  # swaps out transport
                 result = f(self, *args, **kwargs)
-                self._retry_count = 0 # reset the count after a success
+                self._retry_count = 0  # reset the count after a success
                 return result
             except Thrift.TApplicationException:
                 self.close()
@@ -148,7 +148,6 @@ class ConnectionWrapper(Connection):
                                                 (self._retry_count, exc.__class__.__name__, exc))
                 # Exponential backoff
                 time.sleep(_BASE_BACKOFF * (2 ** self._retry_count))
-
                 kwargs['reset'] = True
                 return new_f(self, *args, **kwargs)
 
@@ -161,6 +160,8 @@ class ConnectionWrapper(Connection):
             raise TimedOutException
         else:
             return self._original_meth(*args, **kwargs)
+
+
 
     def get_keyspace_description(self, keyspace=None, use_dict_for_col_metadata=False):
         """
@@ -453,18 +454,12 @@ class ConnectionPool(object):
                                  transport_factory=self.transport_factory)
 
     def _replace_wrapper(self):
-        """Try to replace the connection."""
-        if not self._q.full():
-            conn = self._create_connection()
-            conn._checkin()
-
-            try:
-                self._q.put(conn, False)
-            except Queue.Full:
-                conn._dispose_wrapper(reason="pool is already full")
-            else:
-                with self._pool_lock:
-                    self._current_conns += 1
+        conn = self._create_connection()
+        with self._pool_lock:
+            self._current_conns += 1
+        if self._pool_threadlocal:
+            self._tlocal.current = conn
+        return conn
 
     def _clear_current(self):
         """ If using threadlocal, clear our threadlocal current conn. """
@@ -725,6 +720,8 @@ class ConnectionPool(object):
                    'connection': connection}
             for l in self._on_failure:
                 l.connection_failed(dic)
+
+
 
 QueuePool = ConnectionPool
 
